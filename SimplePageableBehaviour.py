@@ -1,0 +1,69 @@
+import json
+import logging
+import requests
+
+from EntityLoader import LoadContext, Loading
+from github_loading import GithubLoadBehaviour
+
+
+class SimplePageableBehaviour(GithubLoadBehaviour):
+    def __init__(self,
+                 _token: str,
+                 per_page: int,
+                 _logger: logging.Logger,
+                 _loading_obj: str,
+                 _base_url: str):
+        super().__init__(_token, per_page, _logger)
+        self._loading_obj_name = _loading_obj
+        self._base_url = _base_url
+
+    def _build_url(self) -> str:
+        return self._base_url
+
+    def handle_error(self, obj: LoadContext, e: Exception, loading: Loading):
+        self._logger.error('url: {}, loading_id: {}, error with message: {}'.format(obj.url, loading.id, str(e)))
+
+    def get_load_context(self):
+        return LoadContext(
+            self._build_url(),
+            params=self._get_params(1),
+            headers=self._get_headers(),
+            obj={'page': 1, 'remaining': -1}
+        )
+
+    def load(self, obj: LoadContext, loading: Loading):
+        current_page = obj.obj['page']
+        url = '{}{}'.format(loading.url, self._get_url_params(obj.params))
+
+        resp = requests.get(url, headers=obj.headers)
+
+        resp_status = int(resp.status_code)
+        remaining_limit = self._get_remaining_limit(resp)
+
+        next_page = self._get_next_page(current_page, resp)
+
+        rv_objs = []
+        if resp_status < 400:
+            rv_objs = json.loads(resp.text)
+
+        self._logger.info('type: {}, state: {}, page: {}, issues count: {}, limit: {}, url: {}'.format(
+            self._loading_obj_name, resp.status_code, current_page, len(rv_objs), remaining_limit, url
+        ))
+
+        if int(remaining_limit if remaining_limit else 1) <= 0:
+            self._logger.info('token expired')
+
+        load_result = obj.get_simplified_load_result(
+            rv_objs,
+            LoadContext(
+                self._build_url(),
+                params=self._get_params(next_page),
+                headers=self._get_headers(),
+                obj={'page': next_page, 'remaining': -1}
+            ) if not self._is_last_page(len(rv_objs), resp) else None
+        )
+        load_result.resp_headers = dict(resp.headers)
+        load_result.resp_text_data = resp.text
+        load_result.resp_status = resp_status
+
+        return load_result
