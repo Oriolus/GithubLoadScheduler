@@ -6,8 +6,8 @@ from threading import Lock
 
 from tzlocal import get_localzone
 
-from main import get_dwh_connection
-
+from config import Config
+from main import get_dwh_connection, get_logger
 
 
 class QueueState(Enum):
@@ -16,8 +16,10 @@ class QueueState(Enum):
     PROCESSED = 'processed'
 
 
-MAX_ENTRY_BY_QUEUE = 100
+OBJECTS_PER_TOKEN = 150
+QUEUE_THRESHOLD = 50
 MAX_RETRY_COUNT = 10
+MU = 0.1
 
 
 class QueueEntry(object):
@@ -152,23 +154,23 @@ class QueueRepository(object):
                     )
                     values
                     (
-                        %(token_id)s
-                        , %(url)s
-                        , %(base_url)s
+                        %(_token_id)s
+                        , %(_url)s
+                        , %(_base_url)s
                         , now()::timestamptz(3)
                         , now()::timestamptz(3)
                         , 0
-                        , %(obj_type)%
-                        , (select max(execute_at) + interval '1 second' * 0.72 from stg.object_queue where token_id = %(token_id)s)
-                        , %(state)s
+                        , %(_obj_type)s
+                        , (select coalesce(max(execute_at), now()::timestamptz(0)) + interval '1 second' * 0.72 from stg.object_queue where token_id = %(_token_id)s)
+                        , %(_state)s
                     )
                 '''
                 cur.execute(query, {
-                    'token_id': entry.token_id,
-                    'url': entry.url,
-                    'base_url': entry.base_url,
-                    'obj_type': entry.entry_type,
-                    'state': QueueState.UNPROCESSED.value
+                    '_token_id': entry.token_id,
+                    '_url': entry.url,
+                    '_base_url': entry.base_url,
+                    '_obj_type': entry.entry_type,
+                    '_state': QueueState.UNPROCESSED.value
                 })
                 conn.commit()
 
@@ -201,6 +203,7 @@ class QueueRepository(object):
                                 token_id = %(token_id)s
                         )
                         , retry_count = retry_count + 1
+                        , uuid = null
                     where
                         id = %(entry_id)s
                         '''
@@ -230,17 +233,18 @@ class QueueRepository(object):
                 '''
                 cur.execute(query, (id, ))
                 raw = cur.fetchone()
-                result = QueueEntry(
-                    raw[2],
-                    raw[1],
-                    uuid=None,
-                    entry_type=raw[3],
-                    execute_at=None,
-                    base_url=raw[4],
-                    retry_count=raw[5],
-                    state=raw[6]
-                )
-                result.id = raw[0]
+                if raw:
+                    result = QueueEntry(
+                        raw[2],
+                        raw[1],
+                        uuid=None,
+                        entry_type=raw[3],
+                        execute_at=None,
+                        base_url=raw[4],
+                        retry_count=raw[5],
+                        state=raw[6]
+                    )
+                    result.id = raw[0]
         return result
 
     def save_error(self, obj: QueueEntry, error_text: str):
@@ -248,7 +252,7 @@ class QueueRepository(object):
             with conn.cursor() as cur:
                 query = '''
                     insert into
-                        stg.object_done_pool
+                        stg.object_history
                     (
                         base_object_url
                         , object_url
@@ -284,12 +288,12 @@ class QueueRepository(object):
                 })
                 conn.commit()
 
-    def move_to_object_pool(self, obj: QueueEntry):
+    def move_to_object_history(self, obj: QueueEntry):
         with self.__get_connection() as conn:
             with conn.cursor() as cur:
                 query = '''
                     insert into
-                        stg.object_done_pool
+                        stg.object_history
                     (
                         base_object_url
                         , object_url
@@ -319,7 +323,10 @@ class QueueRepository(object):
                 })
                 conn.commit()
 
-    def fill(self):
+    def fill(self,
+             queue_threshold: int,
+             objects_per_token: int
+             ) -> int:
         query = '''
             with token_to_enqueue as
             (
@@ -353,7 +360,7 @@ class QueueRepository(object):
             , numbered as
             (
                 /*
-                    find objects neither in object_queue nor in object_done_pull
+                    find objects neither in object_queue nor in object_history
                 */
                 select
                     is_load.url base_obj_url
@@ -370,10 +377,8 @@ class QueueRepository(object):
                     left join stg.object_queue que on
                         que.base_object_url = is_load.url
     
-                    left join stg.object_done_pull done on
+                    left join stg.object_history done on
                         done.base_object_url = is_load.url
-                        and
-                        done.state = 'unprocessed'
     
                 where
                     que.url is null
@@ -430,17 +435,23 @@ class QueueRepository(object):
             from
                 joint_object
         '''
+        affected = 0
         with self.__get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(query, {
-                    'queue_threshold': 9,
-                    'objects_per_token': 10,
+                    'queue_threshold': queue_threshold,
+                    'objects_per_token': objects_per_token,
                     'start_status': QueueState.UNPROCESSED.value
                 })
+                affected = cur.rowcount
                 conn.commit()
-        pass
+        return affected
 
-    def mark_objects(self, _uuid: str, stmp: datetime):
+    def mark_objects(self,
+                     _uuid: str,
+                     stmp: datetime,
+                     mark_timestamp_delta: float = MU
+                     ) -> int:
         query = '''
             update
                 stg.object_queue
@@ -457,6 +468,7 @@ class QueueRepository(object):
                 and
                 uuid is null
         '''
+        affected = 0
         with self.__get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(query, {
@@ -464,9 +476,11 @@ class QueueRepository(object):
                     'cur_timestamp': stmp,
                     'from_state': QueueState.UNPROCESSED.value,
                     'to_state': QueueState.TO_PROCESS.value,
-                    'mu': 0.15
+                    'mu': mark_timestamp_delta
                 })
+                affected = cur.rowcount
                 conn.commit()
+        return affected
 
     def by_uuid(self, _uuid: str) -> List[QueueEntry]:
         query = '''
@@ -498,22 +512,66 @@ class QueueRepository(object):
                     res.append(_obj)
         return res
 
+    def clear(self) -> int:
+        affected = 0
+        with self.__get_connection() as conn:
+            with conn.cursor() as cur:
+                query = 'truncate table stg.object_queue'
+                cur.execute(query)
+                affected = cur.rowcount
+                conn.commit()
+        return affected
+
+    def delete_ancient_entries(self, depth_secs: int) -> int:
+        affected = 0
+        with self.__get_connection() as conn:
+            with conn.cursor() as cur:
+                query = '''
+                    delete from
+                        stg.object_queue
+                    where
+                        execute_at < now()::timestamptz(3) - interval '1 second' * %(depth)s
+                            '''
+                cur.execute(query, {'depth': depth_secs})
+                affected = cur.rowcount
+                conn.commit()
+        return affected
+
 
 class ObjectQueue(object):
-    def __init__(self):
+    def __init__(self, config: Config):
         self._queue_repository = QueueRepository()  # type: QueueRepository
         self._get_executing_lock = Lock()
+        self._logger = get_logger()
+        self._config = config
+
+    def clear(self):
+        self._queue_repository.clear()
+
+    def delete_ancient_entries(self, depth_secs: int = 120):
+        affected = self._queue_repository.delete_ancient_entries(depth_secs)
+        self._logger.info('removing ancient records: {}'.format(affected))
 
     def fill(self):
-        self._queue_repository.fill()
+        _cur_uuid = uuid4()
+        self._logger.debug('ObjectQueue.fill: start. uuid: {}'.format(_cur_uuid))
+        affected = self._queue_repository.fill(
+            self._config.sched_queue_threshold if self._config.sched_queue_threshold else QUEUE_THRESHOLD,
+            self._config.sched_object_per_token if self._config.sched_object_per_token else OBJECTS_PER_TOKEN
+        )
+        self._logger.debug('ObjectQueue.fill: end. affected rows: {}. uuid: {}'.format(affected, _cur_uuid))
 
-    def next_entries(self) -> List[QueueEntry]:
+    def next_entries_by_current_timestamp(self) -> List[QueueEntry]:
         _cur_uuid = str(uuid4())
+        self._logger.debug('ObjectQueue.next_entries_by_current_timestamp: start. uuid: {}'.format(_cur_uuid))
         with self._get_executing_lock:
-            date_str = "2019-09-03 00:14:08.192"
-            cur_timestamp = get_localzone().localize(datetime.strptime(date_str, '%Y-%m-%d %H:%M:%S.%f'))
-            # cur_timestamp = datetime.now(get_localzone())
-            self._queue_repository.mark_objects(_cur_uuid, cur_timestamp)
+            # date_str = "2019-09-03 00:14:08.192"
+            # cur_timestamp = get_localzone().localize(datetime.strptime(date_str, '%Y-%m-%d %H:%M:%S.%f'))
+            cur_timestamp = datetime.now(get_localzone())
+            self._queue_repository.mark_objects(_cur_uuid, cur_timestamp,
+                self._config.sched_mark_timestamp_delta if self._config.sched_mark_timestamp_delta else MU
+            )
+            self._logger.debug('ObjectQueue.next_entries_by_current_timestamp: marked. uuid: {}'.format(_cur_uuid))
         return self._queue_repository.by_uuid(_cur_uuid)
 
 
