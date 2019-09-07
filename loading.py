@@ -1,11 +1,11 @@
 import json
 import uuid
-from main import get_dwh_connection
+from main import transaction
 from typing import Dict, Optional
 
 
 def get_db_connection():
-    return get_dwh_connection()
+    return transaction()
 
 
 class Loading:

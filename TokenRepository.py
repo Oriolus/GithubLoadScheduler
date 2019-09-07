@@ -1,4 +1,4 @@
-from main import get_dwh_connection
+from main import transaction
 
 
 class TokenRepostory(object):
@@ -6,7 +6,7 @@ class TokenRepostory(object):
         pass
 
     def __get_db_connection(self):
-        return get_dwh_connection()
+        return transaction()
 
     def by_id(self, id: int) -> str:
         result = None
@@ -18,7 +18,7 @@ class TokenRepostory(object):
                     from
                         log.token
                     where
-                        id = 8
+                        id = %s
                 '''
                 cur.execute(query, (id,))
                 result = cur.fetchone()[0]

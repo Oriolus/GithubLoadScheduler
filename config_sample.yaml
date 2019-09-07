@@ -1,0 +1,18 @@
+db_settings:
+  host: ''
+  user: ''
+  password: ''
+  database: ''
+  min_connections: 1
+  max_connections: 20
+github_api:
+  per_page: 100
+scheduler:
+  sched_object_per_token: 200
+  sched_queue_threshold: 100
+  sched_mark_timestamp_delta: 0.1
+  shift_seconds: 60
+  db_host: ''
+  db_user: ''
+  db_password: ''
+  db_database: ''
