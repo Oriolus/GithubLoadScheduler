@@ -4,9 +4,11 @@ from SimplePageableBehaviour import SimplePageableBehaviour
 from ObjectQueue import QueueRepository, QueueEntry, QueueState, MAX_RETRY_COUNT
 
 from uuid import uuid4
+from json import dumps
+from copy import deepcopy
+from threading import local
 from datetime import datetime
 from tzlocal import get_localzone
-from threading import local
 
 from config import Config
 
@@ -27,19 +29,15 @@ class LoadHandler(object):
         queue_object.state = QueueState.PROCESSED.value
         self.__queue_repository.enqueue_ok(queue_object)
         self.__logger.debug('LoadHandler._handle_ok: enqueue done. uuid: {}'.format(cur_uuid))
-        # if load_result.next_load_context:
-        #     next_loading = load_result.next_load_context
-        #     self.__queue_repository.add_entry(
-        #         QueueEntry(
-        #             next_loading.url,
-        #             queue_object.token_id,
-        #             uuid=None,
-        #             entry_type=queue_object.entry_type,
-        #             execute_at=None,
-        #             base_url=queue_object.base_url
-        #         )
-        #     )
-        #     self.__logger.debug('LoadHandler._handle_ok: added next page. uuid: {}'.format(cur_uuid))
+        if load_result.next_load_context:
+            _new_entry = deepcopy(queue_object)
+            _headers = deepcopy(load_result.next_load_context.headers)
+            del _headers['Authorization']
+            _new_entry.headers = dumps(_headers)
+            _new_entry.params = dumps(load_result.next_load_context.params)
+            _new_entry.url = load_result.next_load_context.url
+            self.__queue_repository.add_entry(_new_entry)
+            self.__logger.debug('LoadHandler._handle_ok: added next page. uuid: {}'.format(cur_uuid))
 
     def _handle_error(self, queue_object: QueueEntry, load_result: LoadResult, error_text: str):
         cur_uuid = self.__thread_local_store.cur_uuid
@@ -78,7 +76,9 @@ class LoadHandler(object):
                     self.__config.gh_per_page if self.__config else 100,
                     self.__logger,
                     current_obj.entry_type,
-                    current_obj.url
+                    current_obj.url,
+                    current_obj.headers,
+                    current_obj.params
                 )).load()
                 self.__logger.debug('LoadHandler.handle: loaded. uuid: {}'.format(_cur_uuid))
 

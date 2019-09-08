@@ -12,10 +12,14 @@ class SimplePageableBehaviour(GithubLoadBehaviour):
                  per_page: int,
                  _logger: logging.Logger,
                  _loading_obj: str,
-                 _base_url: str):
+                 _base_url: str,
+                 _headers: str,
+                 _params: str):
         super().__init__(_token, per_page, _logger)
         self._loading_obj_name = _loading_obj
         self._base_url = _base_url
+        self._headers = _headers
+        self._params = _params
 
     def _build_url(self) -> str:
         return self._base_url
@@ -26,10 +30,21 @@ class SimplePageableBehaviour(GithubLoadBehaviour):
     def get_load_context(self):
         return LoadContext(
             self._build_url(),
-            params=self._get_params(1),
+            params=self._get_params(None),
             headers=self._get_headers(),
             obj={'page': 1, 'remaining': -1}
         )
+
+    def _get_params(self, page: int) -> dict:
+        _prms = json.loads(self._params)
+        if page:
+            _prms['page'] = page
+        return _prms
+
+    def _get_headers(self) -> dict:
+        _hdrs = json.loads(self._headers)
+        _hdrs['Authorization'] = 'token {}'.format(self._token)
+        return _hdrs
 
     def load(self, obj: LoadContext, loading: Loading):
         current_page = obj.obj['page']
@@ -46,8 +61,9 @@ class SimplePageableBehaviour(GithubLoadBehaviour):
         if resp_status < 400:
             rv_objs = json.loads(resp.text)
 
-        self._logger.info('type: {}, state: {}, page: {}, issues count: {}, limit: {}, url: {}'.format(
-            self._loading_obj_name, resp.status_code, current_page, len(rv_objs), remaining_limit, url
+        self._logger.info('type: {}, state: {}, page: {}, {} count: {}, limit: {}, url: {}'.format(
+            self._loading_obj_name, resp.status_code, current_page,
+            self._loading_obj_name, len(rv_objs), remaining_limit, url
         ))
 
         if int(remaining_limit if remaining_limit else 1) <= 0:

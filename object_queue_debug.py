@@ -1,7 +1,7 @@
 from uuid import uuid4
 
 from LoadHandler import LoadHandler
-from ObjectQueue import ObjectQueue
+from ObjectQueue import ObjectQueue, QueueRepository
 
 from main import get_logger
 from config import get_config

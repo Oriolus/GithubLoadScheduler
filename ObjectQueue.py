@@ -38,6 +38,8 @@ class QueueEntry(object):
         self.__created_at = None  # type: datetime
         self.__updated_at = None  # type: datetime
         self.__execute_at = None  # type: datetime
+        self.__headers = None  # type: str
+        self.__params = None  # type: str
 
     @property
     def entry_type(self) -> str:
@@ -135,6 +137,22 @@ class QueueEntry(object):
     def execute_at(self, value: datetime):
         self.__execute_at = value
 
+    @property
+    def headers(self) -> str:
+        return self.__headers
+
+    @headers.setter
+    def headers(self, value: str):
+        self.__headers = value
+
+    @property
+    def params(self) -> str:
+        return self.__params
+
+    @params.setter
+    def params(self, value: str):
+        self.__params = value
+
 
 class QueueRepository(object):
     def __init__(self):
@@ -167,6 +185,8 @@ class QueueRepository(object):
                     , closed_at
                     , state
                     , retry_count
+                    , headers
+                    , params
                 )
                 values
                 (
@@ -178,6 +198,8 @@ class QueueRepository(object):
                     , %(closed_at)s
                     , %(state)s
                     , %(retry_count)s + 1
+                    , %(headers)s
+                    , %(params)s
                 )
             '''
             cur.execute(query, {
@@ -188,7 +210,9 @@ class QueueRepository(object):
                 'updated_at': obj.updated_at,
                 'closed_at': obj.closed_at,
                 'state': obj.state,
-                'retry_count': obj.retry_count
+                'retry_count': obj.retry_count,
+                'headers': obj.headers,
+                'params': obj.params
             })
 
     def __mark_issues_done(self, url: str, conn):
@@ -271,14 +295,17 @@ class QueueRepository(object):
                         where
                             token_id = %(token_id)s
                     )
-                    , retry_count = retry_count + 1
                     , uuid = null
+                    , retry_count = %(retry_count)s
+                    , state = %(state)s
                 where
                     id = %(entry_id)s
                     '''
             cur.execute(query, {
                 'token_id': entry.token_id,
-                'entry_id': entry.id
+                'entry_id': entry.id,
+                'retry_count': entry.retry_count,
+                'state': QueueState.UNPROCESSED.value
             })
 
     def shift_by_token(self, token_id: int, shift_seconds: int = 7):
@@ -305,6 +332,8 @@ class QueueRepository(object):
                         , object_type
                         , execute_at
                         , state
+                        , headers
+                        , params
                     )
                     values
                     (
@@ -317,6 +346,8 @@ class QueueRepository(object):
                         , %(_obj_type)s
                         , (select coalesce(max(execute_at), now()::timestamptz(0)) + interval '1 second' * 0.72 from stg.object_queue where token_id = %(_token_id)s)
                         , %(_state)s
+                        , %(_headers)s
+                        , %(_params)s
                     )
                 '''
                 cur.execute(query, {
@@ -324,7 +355,9 @@ class QueueRepository(object):
                     '_url': entry.url,
                     '_base_url': entry.base_url,
                     '_obj_type': entry.entry_type,
-                    '_state': QueueState.UNPROCESSED.value
+                    '_state': QueueState.UNPROCESSED.value,
+                    '_headers': entry.headers,
+                    '_params': entry.params
                 })
                 conn.commit()
 
@@ -360,6 +393,7 @@ class QueueRepository(object):
             conn.set_session(autocommit=False)
             self.__save_error(entry, error_text, conn)
             self.__move_entry_to_end(entry, conn)
+            self.__mark_issues_done(entry.base_url, conn)
             conn.commit()
 
     def enqueue_ok(self, queue_object: QueueEntry):
@@ -462,6 +496,8 @@ class QueueRepository(object):
                 , object_type
                 , execute_at
                 , state
+                , headers
+                , params
             )
             select
                 token_id
@@ -474,6 +510,8 @@ class QueueRepository(object):
                 , object_type
                 , last_execute + (rn * interval '1 second' * 0.72) execute_at
                 , %(start_status)s
+                , \'{}\'
+                , \'{"per_page": 100, "page": 1}\'
             from
                 joint_object
         '''
@@ -542,6 +580,8 @@ class QueueRepository(object):
                         , state
                         , uuid
                         , execute_at
+                        , headers
+                        , params
                     from
                         stg.object_queue
                     where
@@ -562,6 +602,8 @@ class QueueRepository(object):
                     result.updated_at = raw['updated_at']
                     result.closed_at = raw['closed_at']
                     result.uuid = raw['uuid']
+                    result.headers = raw['headers']
+                    result.params = raw['params']
         return result
 
     def by_uuid(self, _uuid: str) -> List[QueueEntry]:
@@ -579,6 +621,8 @@ class QueueRepository(object):
                 , state
                 , uuid
                 , execute_at
+                , headers
+                , params
             from
                 stg.object_queue
             where
@@ -600,6 +644,8 @@ class QueueRepository(object):
                     result.updated_at = raw['updated_at']
                     result.closed_at = raw['closed_at']
                     result.uuid = raw['uuid']
+                    result.headers = raw['headers']
+                    result.params = raw['params']
                     res.append(result)
         return res
 

@@ -1,3 +1,4 @@
+import os
 import logging
 from contextlib import contextmanager
 from psycopg2.pool import ThreadedConnectionPool
@@ -51,7 +52,8 @@ def get_logger(logger_file: str = None):
         return logger
     if not logger_file:
         logger_file = 'main.log'
-    file_handler = RotatingFileHandler(logger_file, mode='a', maxBytes=2e7)
+    logger_file = os.path.join('logs', logger_file)
+    file_handler = RotatingFileHandler(logger_file, mode='a', maxBytes=2e7, backupCount=1000)
     file_handler.setLevel(logging.DEBUG)
 
     console_handler = logging.StreamHandler()
