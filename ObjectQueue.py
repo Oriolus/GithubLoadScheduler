@@ -29,6 +29,7 @@ class QueueEntry(object):
         self.__id = None  # type: int
         self.__url = None  # type: str
         self.__token_id = None  # type: int
+        self.__token = None  # type: str
         self.__uuid = None  # type: str
         self.__execute_at = None  # type: datetime
         self.__base_url = None  # type: str
@@ -40,6 +41,7 @@ class QueueEntry(object):
         self.__execute_at = None  # type: datetime
         self.__headers = None  # type: str
         self.__params = None  # type: str
+        self.__error = None  # type: str
 
     @property
     def entry_type(self) -> str:
@@ -153,25 +155,36 @@ class QueueEntry(object):
     def params(self, value: str):
         self.__params = value
 
+    @property
+    def token(self) -> str:
+        return self.__token
 
-class QueueRepository(object):
+    @token.setter
+    def token(self, value: str):
+        self.__token = value
+
+    @property
+    def error(self) -> str:
+        return self.__error
+
+    @error.setter
+    def error(self, value: str):
+        self.__error = value
+
+
+class ObjectHistoryRepository(object):
     def __init__(self):
         pass
 
     def __get_connection(self):
         return transaction()
 
-    def __remove_by_id(self, _id: int, conn):
-        with conn.cursor() as cur:
-            query = '''
-                delete from
-                    stg.object_queue
-                where
-                    id = %s
-            '''
-            cur.execute(query, (_id,))
+    def save_history(self, obj: QueueEntry):
+        with self.__get_connection() as conn:
+            conn.set_session(autocommit=False)
+            self.save_history_traned(obj, conn)
 
-    def __move_to_object_history(self, obj: QueueEntry, conn):
+    def save_history_traned(self, obj: QueueEntry, conn):
         with conn.cursor() as cur:
             query = '''
                 insert into
@@ -187,6 +200,7 @@ class QueueRepository(object):
                     , retry_count
                     , headers
                     , params
+                    , token_id
                 )
                 values
                 (
@@ -200,6 +214,7 @@ class QueueRepository(object):
                     , %(retry_count)s + 1
                     , %(headers)s
                     , %(params)s
+                    , %(token_id)s
                 )
             '''
             cur.execute(query, {
@@ -212,10 +227,29 @@ class QueueRepository(object):
                 'state': obj.state,
                 'retry_count': obj.retry_count,
                 'headers': obj.headers,
-                'params': obj.params
+                'params': obj.params,
+                'token_id': obj.token_id
             })
 
-    def __mark_issues_done(self, url: str, conn):
+
+class QueueRepository(object):
+    def __init__(self):
+        pass
+
+    def __get_connection(self):
+        return transaction()
+
+    def remove_by_id_traned(self, _id: int, conn):
+        with conn.cursor() as cur:
+            query = '''
+                delete from
+                    stg.object_queue
+                where
+                    id = %s
+            '''
+            cur.execute(query, (_id,))
+
+    def mark_issues_done_traned(self, url: str, conn):
         with conn.cursor() as cur:
             query = '''
             update
@@ -239,48 +273,7 @@ class QueueRepository(object):
                     '''
             cur.execute(query, {'shift_secs': shift_seconds, 'token_id': token_id})
 
-    def __save_error(self, obj: QueueEntry, error_text: str, conn):
-        with conn.cursor() as cur:
-            query = '''
-                insert into
-                    stg.object_history
-                (
-                    base_object_url
-                    , object_url
-                    , object_type
-                    , created_at
-                    , updated_at
-                    , closed_at
-                    , state
-                    , retry_count
-                    , error_text
-                )
-                values
-                (
-                    %(base_object_url)s
-                    , %(url)s
-                    , %(object_type)s
-                    , %(created_at)s
-                    , %(updated_at)s
-                    , %(closed_at)s
-                    , %(state)s
-                    , %(retry_count)s
-                    , %(error_text)s
-                )
-            '''
-            cur.execute(query, {
-                'base_object_url': obj.base_url,
-                'url': obj.url,
-                'object_type': obj.entry_type,
-                'created_at': obj.created_at,
-                'updated_at': obj.updated_at,
-                'closed_at': obj.closed_at,
-                'state': obj.state,
-                'retry_count': obj.retry_count,
-                'error_text': error_text
-            })
-
-    def __move_entry_to_end(self, entry: QueueEntry, conn):
+    def move_entry_to_end_traned(self, entry: QueueEntry, conn):
         with conn.cursor() as cur:
             query = '''
                 update
@@ -363,46 +356,15 @@ class QueueRepository(object):
 
     def remove_by_id(self, _id: int):
         with self.__get_connection() as conn:
-            self.__remove_by_id(conn)
-
-    def save_error(self, obj: QueueEntry, error_text: str):
-        with self.__get_connection() as conn:
-            self.__save_error(obj, error_text, conn)
-
-    def move_to_object_history(self, obj: QueueEntry):
-        with self.__get_connection() as conn:
-            self.__move_to_object_history(obj, conn)
+            self.remove_by_id_traned(conn)
 
     def mark_issues_done(self, url: str):
         with self.__get_connection() as conn:
-            self.__mark_issues_done(url, conn)
+            self.mark_issues_done_traned(url, conn)
 
     def move_entry_to_end(self, entry: QueueEntry):
         with self.__get_connection() as conn:
-            self.__move_entry_to_end(entry, conn)
-
-    def enqueue_with_error(self, entry: QueueEntry, error_text: str):
-        with self.__get_connection() as conn:
-            conn.set_session(autocommit=False)
-            self.__save_error(entry, error_text, conn)
-            self.__remove_by_id(entry.id, conn)
-            self.__mark_issues_done(entry.base_url, conn)
-            conn.commit()
-
-    def move_to_end_with_error(self, entry: QueueEntry, error_text):
-        with self.__get_connection() as conn:
-            conn.set_session(autocommit=False)
-            self.__save_error(entry, error_text, conn)
-            self.__move_entry_to_end(entry, conn)
-            conn.commit()
-
-    def enqueue_ok(self, queue_object: QueueEntry):
-        with self.__get_connection() as conn:
-            conn.set_session(autocommit=False)
-            self.__move_to_object_history(queue_object, conn)
-            self.__mark_issues_done(queue_object.base_url, conn)
-            self.__remove_by_id(queue_object.id, conn)
-            conn.commit()
+            self.move_entry_to_end_traned(entry, conn)
 
     def fill(self, queue_threshold: int, objects_per_token: int) -> int:
         query = '''
@@ -569,24 +531,29 @@ class QueueRepository(object):
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
                 query = '''
                     select
-                        id
-                        , token_id
-                        , url
-                        , object_type
-                        , base_object_url
-                        , retry_count
-                        , created_at
-                        , updated_at
-                        , closed_at
-                        , state
-                        , uuid
-                        , execute_at
-                        , headers
-                        , params
+                        obj.id
+                        , obj.token_id
+                        , obj.url
+                        , obj.object_type
+                        , obj.base_object_url
+                        , obj.retry_count
+                        , obj.created_at
+                        , obj.updated_at
+                        , obj.closed_at
+                        , obj.state
+                        , obj.uuid
+                        , obj.execute_at
+                        , obj.headers
+                        , obj.params
+                        , tkn.value as token
                     from
-                        stg.object_queue
+                        stg.object_queue obj
+                        
+                        inner join log.token tkn on
+                            tkn.id = obj.token_id
+                        
                     where
-                        id = %s
+                        obj.id = %s
                 '''
                 cur.execute(query, (id, ))
 
@@ -605,29 +572,34 @@ class QueueRepository(object):
                     result.uuid = raw['uuid']
                     result.headers = raw['headers']
                     result.params = raw['params']
+                    result.token = raw['token']
         return result
 
     def by_uuid(self, _uuid: str) -> List[QueueEntry]:
         query = '''
             select
-                id
-                , token_id
-                , url
-                , object_type
-                , base_object_url
-                , retry_count
-                , created_at
-                , updated_at
-                , closed_at
-                , state
-                , uuid
-                , execute_at
-                , headers
-                , params
+                obj.id
+                , obj.token_id
+                , obj.url
+                , obj.object_type
+                , obj.base_object_url
+                , obj.retry_count
+                , obj.created_at
+                , obj.updated_at
+                , obj.closed_at
+                , obj.state
+                , obj.uuid
+                , obj.execute_at
+                , obj.headers
+                , obj.params
+                , tkn.value as token
             from
-                stg.object_queue
+                stg.object_queue obj
+                
+                inner join log.token tkn on
+                    tkn.id = obj.token_id
             where
-                uuid = %s
+                obj.uuid = %s
         '''
         res = []
         with self.__get_connection() as conn:
@@ -647,6 +619,7 @@ class QueueRepository(object):
                     result.uuid = raw['uuid']
                     result.headers = raw['headers']
                     result.params = raw['params']
+                    result.token = raw['token']
                     res.append(result)
         return res
 
@@ -678,36 +651,58 @@ class QueueRepository(object):
 
 class ObjectQueue(object):
     def __init__(self, config: Config):
-        self._queue_repository = QueueRepository()  # type: QueueRepository
-        self._get_executing_lock = Lock()
-        self._logger = get_logger()
-        self._config = config
+        self.__queue_repository = QueueRepository()  # type: QueueRepository
+        self.__obj_hst_repository = ObjectHistoryRepository()  # type: ObjectHistoryRepository
+        self.__get_executing_lock = Lock()
+        self.__logger = get_logger()
+        self.__config = config
+
+    def __get_connection(self):
+        return transaction()
 
     def clear(self):
-        self._queue_repository.clear()
+        self.__queue_repository.clear()
 
     def delete_ancient_entries(self, depth_secs: int = 120):
-        affected = self._queue_repository.delete_ancient_entries(depth_secs)
-        self._logger.info('removing ancient records: {}'.format(affected))
+        affected = self.__queue_repository.delete_ancient_entries(depth_secs)
+        self.__logger.info('removing ancient records: {}'.format(affected))
 
     def fill(self):
         _cur_uuid = uuid4()
-        self._logger.debug('ObjectQueue.fill: start. uuid: {}'.format(_cur_uuid))
-        affected = self._queue_repository.fill(
-            self._config.sched_queue_threshold if self._config.sched_queue_threshold else QUEUE_THRESHOLD,
-            self._config.sched_object_per_token if self._config.sched_object_per_token else OBJECTS_PER_TOKEN
+        self.__logger.debug('ObjectQueue.fill: start. uuid: {}'.format(_cur_uuid))
+        affected = self.__queue_repository.fill(
+            self.__config.sched_queue_threshold if self.__config.sched_queue_threshold else QUEUE_THRESHOLD,
+            self.__config.sched_object_per_token if self.__config.sched_object_per_token else OBJECTS_PER_TOKEN
         )
-        self._logger.debug('ObjectQueue.fill: end. affected rows: {}. uuid: {}'.format(affected, _cur_uuid))
+        self.__logger.debug('ObjectQueue.fill: end. affected rows: {}. uuid: {}'.format(affected, _cur_uuid))
 
     def next_entries_by_current_timestamp(self) -> List[QueueEntry]:
         _cur_uuid = str(uuid4())
-        self._logger.debug('ObjectQueue.next_entries_by_current_timestamp: start. uuid: {}'.format(_cur_uuid))
-        with self._get_executing_lock:
+        self.__logger.debug('ObjectQueue.next_entries_by_current_timestamp: start. uuid: {}'.format(_cur_uuid))
+        with self.__get_executing_lock:
             cur_timestamp = datetime.now(get_localzone())
-            self._queue_repository.mark_objects(_cur_uuid, cur_timestamp,
-                self._config.sched_mark_timestamp_delta if self._config.sched_mark_timestamp_delta else MU
-            )
-            self._logger.debug('ObjectQueue.next_entries_by_current_timestamp: marked. uuid: {}'.format(_cur_uuid))
-        return self._queue_repository.by_uuid(_cur_uuid)
+            self.__queue_repository.mark_objects(_cur_uuid, cur_timestamp,
+                                                 self.__config.sched_mark_timestamp_delta if self.__config.sched_mark_timestamp_delta else MU
+                                                 )
+            self.__logger.debug('ObjectQueue.next_entries_by_current_timestamp: marked. uuid: {}'.format(_cur_uuid))
+        return self.__queue_repository.by_uuid(_cur_uuid)
 
+    def move_to_end_with_error(self, entry: QueueEntry):
+        with self.__get_connection() as conn:
+            conn.set_session(autocommit=False)
+            self.__obj_hst_repository.save_history_traned(entry, conn)
+            self.__queue_repository.move_entry_to_end_traned(entry, conn)
 
+    def enqueue_with_error(self, entry: QueueEntry):
+        with self.__get_connection() as conn:
+            conn.set_session(autocommit=False)
+            self.__obj_hst_repository.save_history_traned(entry, conn)
+            self.__queue_repository.remove_by_id_traned(entry.id, conn)
+            self.__queue_repository.mark_issues_done_traned(entry.base_url, conn)
+
+    def enqueue_ok(self, queue_object: QueueEntry):
+        with self.__get_connection() as conn:
+            conn.set_session(autocommit=False)
+            self.__obj_hst_repository.save_history_traned(queue_object, conn)
+            self.__queue_repository.mark_issues_done_traned(queue_object.base_url, conn)
+            self.__queue_repository.remove_by_id_traned(queue_object.id, conn)

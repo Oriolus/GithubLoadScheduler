@@ -1,7 +1,7 @@
 from main import transaction
 
 
-class TokenRepostory(object):
+class TokenRepository(object):
     def __init__(self):
         pass
 

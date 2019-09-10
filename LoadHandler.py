@@ -1,7 +1,6 @@
-from TokenRepository import TokenRepostory
 from EntityLoader import EntityLoader, LoadResult
 from SimplePageableBehaviour import SimplePageableBehaviour
-from ObjectQueue import QueueRepository, QueueEntry, QueueState, MAX_RETRY_COUNT
+from ObjectQueue import QueueRepository, ObjectHistoryRepository, ObjectQueue, QueueEntry, QueueState, MAX_RETRY_COUNT
 
 from uuid import uuid4
 from json import dumps
@@ -15,8 +14,9 @@ from config import Config
 
 class LoadHandler(object):
     def __init__(self, logger, config: Config = None):
+        self.__object_queue = ObjectQueue(config)
         self.__queue_repository = QueueRepository()  # type: QueueRepository
-        self.__token_repository = TokenRepostory()  # type: TokenRepostory
+        self.__obj_history_repository = ObjectHistoryRepository()  # type: ObjectHistoryRepository
         self.__logger = logger
         self.__config = config  # type: Config
         self.__thread_local_store = local()
@@ -27,7 +27,7 @@ class LoadHandler(object):
         queue_object.updated_at = datetime.now(get_localzone())
         queue_object.closed_at = datetime.now(get_localzone())
         queue_object.state = QueueState.PROCESSED.value
-        self.__queue_repository.enqueue_ok(queue_object)
+        self.__object_queue.enqueue_ok(queue_object)
         if load_result.next_load_context:
             _new_entry = deepcopy(queue_object)
             _headers = deepcopy(load_result.next_load_context.headers)
@@ -45,17 +45,20 @@ class LoadHandler(object):
         self.__logger.debug('LoadHandler._handle_error: start. uuid: {}'.format(cur_uuid))
         queue_object.state = QueueState.UNPROCESSED.value
         queue_object.updated_at = datetime.now(get_localzone())
+        queue_object.error = error_text
         queue_object.retry_count += 1
         if queue_object.retry_count >= MAX_RETRY_COUNT:
             queue_object.closed_at = datetime.now(get_localzone())
-            self.__queue_repository.enqueue_with_error(queue_object, error_text)
+            self.__object_queue.enqueue_with_error(queue_object)
             self.__logger.debug('LoadHandler._handle_error: enqueued with error. uuid: {}'.format(cur_uuid))
         else:
-            self.__queue_repository.move_to_end_with_error(queue_object, error_text)
+            self.__object_queue.move_to_end_with_error(queue_object)
             self.__logger.debug('LoadHandler._handle_error: moved to end with error. uuid: {}'.format(cur_uuid))
         if load_result and load_result.resp_status in (403, 429):
             self.__queue_repository.shift_by_token(queue_object.token_id)
-            self.__logger.debug('LoadHandler._handle_error: object shifted. uuid: {}'.format(cur_uuid))
+            self.__logger.debug('LoadHandler._handle_error: token_id: {}, object shifted. uuid: {}'.format(
+                queue_object.token_id, cur_uuid
+            ))
 
     def handle(self, object_queue_id: int):
         self.__thread_local_store.cur_uuid = uuid4()
@@ -70,9 +73,8 @@ class LoadHandler(object):
                     , current_obj.url,
                     _cur_uuid)
                 )
-                token = self.__token_repository.by_id(current_obj.token_id)
                 load_result = EntityLoader(SimplePageableBehaviour(
-                    token,
+                    current_obj.token,
                     self.__config.gh_per_page if self.__config else 100,
                     self.__logger,
                     current_obj.entry_type,
