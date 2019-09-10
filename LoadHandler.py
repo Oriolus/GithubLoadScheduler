@@ -28,7 +28,6 @@ class LoadHandler(object):
         queue_object.closed_at = datetime.now(get_localzone())
         queue_object.state = QueueState.PROCESSED.value
         self.__queue_repository.enqueue_ok(queue_object)
-        self.__logger.debug('LoadHandler._handle_ok: enqueue done. uuid: {}'.format(cur_uuid))
         if load_result.next_load_context:
             _new_entry = deepcopy(queue_object)
             _headers = deepcopy(load_result.next_load_context.headers)
@@ -38,6 +37,7 @@ class LoadHandler(object):
             _new_entry.url = load_result.next_load_context.url
             self.__queue_repository.add_entry(_new_entry)
             self.__logger.debug('LoadHandler._handle_ok: added next page. uuid: {}'.format(cur_uuid))
+        self.__logger.debug('LoadHandler._handle_ok: enqueue done. uuid: {}'.format(cur_uuid))
 
     def _handle_error(self, queue_object: QueueEntry, load_result: LoadResult, error_text: str):
         cur_uuid = self.__thread_local_store.cur_uuid
@@ -78,7 +78,9 @@ class LoadHandler(object):
                     current_obj.entry_type,
                     current_obj.url,
                     current_obj.headers,
-                    current_obj.params
+                    current_obj.params,
+                    current_obj.token_id,
+                    str(_cur_uuid)
                 )).load()
                 self.__logger.debug('LoadHandler.handle: loaded. uuid: {}'.format(_cur_uuid))
 

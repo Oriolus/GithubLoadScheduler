@@ -14,12 +14,16 @@ class SimplePageableBehaviour(GithubLoadBehaviour):
                  _loading_obj: str,
                  _base_url: str,
                  _headers: str,
-                 _params: str):
+                 _params: str,
+                 _token_id: int,
+                 _proc_uuid: str):
         super().__init__(_token, per_page, _logger)
         self._loading_obj_name = _loading_obj
         self._base_url = _base_url
         self._headers = _headers
         self._params = _params
+        self._token_id = _token_id
+        self._proc_uuid = _proc_uuid
 
     def _build_url(self) -> str:
         return self._base_url
@@ -32,7 +36,7 @@ class SimplePageableBehaviour(GithubLoadBehaviour):
             self._build_url(),
             params=self._get_params(None),
             headers=self._get_headers(),
-            obj={'page': 1, 'remaining': -1}
+            obj={'page': 1, 'remaining': -1, 'token_id': self._token_id, 'proc_uuid': self._proc_uuid}
         )
 
     def _get_params(self, page: int) -> dict:
@@ -48,6 +52,8 @@ class SimplePageableBehaviour(GithubLoadBehaviour):
 
     def load(self, obj: LoadContext, loading: Loading):
         current_page = obj.obj['page']
+        _token_id = obj.obj.get('token_id', None)
+        _proc_uuid = obj.obj.get('proc_uuid', None)
         url = '{}{}'.format(loading.url, self._get_url_params(obj.params))
 
         resp = requests.get(url, headers=obj.headers)
@@ -61,13 +67,14 @@ class SimplePageableBehaviour(GithubLoadBehaviour):
         if resp_status < 400:
             rv_objs = json.loads(resp.text)
 
-        self._logger.info('type: {}, state: {}, page: {}, {} count: {}, limit: {}, url: {}'.format(
+        self._logger.info('token_id: {}, proc_uuid: {}, type: {}, state: {}, page: {}, count: {}, limit: {}, url: {}'.format(
+            _token_id, _proc_uuid,
             self._loading_obj_name, resp.status_code, current_page,
-            self._loading_obj_name, len(rv_objs), remaining_limit, url
+            len(rv_objs), remaining_limit, url
         ))
 
         if int(remaining_limit if remaining_limit else 1) <= 0:
-            self._logger.info('token expired')
+            self._logger.warn('token_id {} is expired'.format(_token_id))
 
         load_result = obj.get_simplified_load_result(
             rv_objs,

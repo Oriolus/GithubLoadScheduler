@@ -54,7 +54,7 @@ def get_logger(logger_file: str = None):
         logger_file = 'main.log'
     logger_file = os.path.join('logs', logger_file)
     file_handler = RotatingFileHandler(logger_file, mode='a', maxBytes=2e7, backupCount=1000)
-    file_handler.setLevel(logging.DEBUG)
+    file_handler.setLevel(logging.INFO)
 
     console_handler = logging.StreamHandler()
     console_handler.setLevel(logging.INFO)
@@ -64,7 +64,7 @@ def get_logger(logger_file: str = None):
     console_handler.setFormatter(_formatter)
 
     logger = logging.getLogger('repo_loading')
-    logger.setLevel(logging.DEBUG)
+    logger.setLevel(logging.INFO)
     logger.addHandler(file_handler)
     logger.addHandler(console_handler)
     return logger

@@ -344,7 +344,7 @@ class QueueRepository(object):
                         , now()::timestamptz(3)
                         , 0
                         , %(_obj_type)s
-                        , (select coalesce(max(execute_at), now()::timestamptz(0)) + interval '1 second' * 0.72 from stg.object_queue where token_id = %(_token_id)s)
+                        , (select coalesce(max(execute_at), now()::timestamptz(3)) + interval '1 second' * 0.72 from stg.object_queue where token_id = %(_token_id)s)
                         , %(_state)s
                         , %(_headers)s
                         , %(_params)s
@@ -386,6 +386,7 @@ class QueueRepository(object):
             conn.set_session(autocommit=False)
             self.__save_error(entry, error_text, conn)
             self.__remove_by_id(entry.id, conn)
+            self.__mark_issues_done(entry.base_url, conn)
             conn.commit()
 
     def move_to_end_with_error(self, entry: QueueEntry, error_text):
@@ -393,7 +394,6 @@ class QueueRepository(object):
             conn.set_session(autocommit=False)
             self.__save_error(entry, error_text, conn)
             self.__move_entry_to_end(entry, conn)
-            self.__mark_issues_done(entry.base_url, conn)
             conn.commit()
 
     def enqueue_ok(self, queue_object: QueueEntry):
@@ -702,8 +702,6 @@ class ObjectQueue(object):
         _cur_uuid = str(uuid4())
         self._logger.debug('ObjectQueue.next_entries_by_current_timestamp: start. uuid: {}'.format(_cur_uuid))
         with self._get_executing_lock:
-            # date_str = "2019-09-03 00:14:08.192"
-            # cur_timestamp = get_localzone().localize(datetime.strptime(date_str, '%Y-%m-%d %H:%M:%S.%f'))
             cur_timestamp = datetime.now(get_localzone())
             self._queue_repository.mark_objects(_cur_uuid, cur_timestamp,
                 self._config.sched_mark_timestamp_delta if self._config.sched_mark_timestamp_delta else MU

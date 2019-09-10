@@ -27,7 +27,7 @@ jobStores = {
     ))
 }
 executors = {
-    'default': ThreadPoolExecutor(12)
+    'default': ThreadPoolExecutor(32)
 }
 
 scheduler = BlockingScheduler(
