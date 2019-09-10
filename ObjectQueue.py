@@ -421,7 +421,8 @@ class QueueRepository(object):
     
                     left join stg.object_queue q on
                         q.token_id = tkn.id
-    
+                where
+                    tkn.is_enable = 1::bit
                 group by
                     tkn.id
                 having
